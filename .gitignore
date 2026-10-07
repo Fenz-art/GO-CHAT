@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+docs/
+*.md
+node_modules
+.next/
+out/
+dist/
+tsconfig.tsbuildinfo
