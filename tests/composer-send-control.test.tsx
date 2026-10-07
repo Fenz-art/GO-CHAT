@@ -91,6 +91,50 @@ describe("ConversationPanel composer controls", () => {
 		expect(screen.getByRole("button", { name: "Send message and attachments" })).toBeDisabled();
 	});
 
+	it("keeps failed uploads queued, shows the server error, and retries with the same operation id", async () => {
+		const operationIds: string[] = [];
+		let attempts = 0;
+		class RetryXMLHttpRequest {
+			status = 0;
+			responseText = "";
+			onload: (() => void) | null = null;
+			onerror: (() => void) | null = null;
+			ontimeout: (() => void) | null = null;
+			timeout = 0;
+			upload = { onprogress: null as ((event: ProgressEvent<EventTarget>) => void) | null };
+			private headers: Record<string, string> = {};
+			open() {}
+			setRequestHeader(name: string, value: string) { this.headers[name] = value; }
+			send(body: Document | XMLHttpRequestBodyInit | null) {
+				attempts++;
+				operationIds.push(this.headers["X-Client-Operation-Id"]);
+				if (attempts === 1) {
+					this.status = 415;
+					this.responseText = JSON.stringify({ code: "unsupported_media", message: "Upload a supported file whose content matches its type" });
+				} else {
+					const file = body instanceof File ? body : null;
+					this.status = 201;
+					this.responseText = JSON.stringify({ id: "media-retried", sessionId: "session-1", senderId: "current-user", clientOperationId: this.headers["X-Client-Operation-Id"], cursor: 1, kind: "media", body: "", state: "sent", createdAt: new Date().toISOString(), fileName: file?.name, mimeType: file?.type, byteSize: file?.size, mediaUrl: "https://media.test/upload" });
+				}
+				queueMicrotask(() => this.onload?.());
+			}
+		}
+		vi.stubGlobal("XMLHttpRequest", RetryXMLHttpRequest);
+		const fetchMock = vi.fn((path: string) => Promise.resolve(json(path.includes("/messages") ? { items: [] } : { notificationsEnabled: true })));
+		renderComposer(fetchMock);
+
+		await screen.findByRole("textbox", { name: "Message peer-handle" });
+		fireEvent.click(screen.getByRole("button", { name: "Queue sample voice" }));
+		fireEvent.click(screen.getByRole("button", { name: "Send message and attachments" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent("Upload failed (HTTP 415): Upload a supported file whose content matches its type");
+		expect(screen.getByLabelText("Attachments ready to send")).toHaveTextContent("sample-voice.webm");
+		fireEvent.click(screen.getByRole("button", { name: "Retry upload" }));
+		await waitFor(() => expect(screen.queryByLabelText("Attachments ready to send")).not.toBeInTheDocument());
+		expect(attempts).toBe(2);
+		expect(operationIds[1]).toBe(operationIds[0]);
+	});
+
 	it("honors a saved disabled Enter preference while retaining the visible Send button", async () => {
 		const uploads = mockSuccessfulMediaUploads();
 		const fetchMock = vi.fn((path: string, options?: RequestInit) => {

@@ -246,19 +246,34 @@ export function ConversationPanel({ userId, discoveryUsername, requestedSession,
     }
     setQueuedAttachments([]);
     const failed: QueuedAttachment[] = [];
+    let firstUploadError = "";
     for (const attachment of attachments) {
       try {
         await uploadMedia(attachment.file, attachment.id);
-      } catch {
+      } catch (uploadError) {
         failed.push(attachment);
+        if (!firstUploadError && uploadError instanceof Error) firstUploadError = `${attachment.name}: ${uploadError.message}`;
       }
     }
     if (failed.length) {
       setQueuedAttachments((current) => [...failed, ...current]);
-      setError(failed.length === 1 ? "Attachment was not sent. It remains queued for Send." : "Some attachments were not sent. They remain queued for Send.");
+      setError(`${failed.length === 1 ? "Attachment was not sent" : "Some attachments were not sent"}. They remain queued for Send.${firstUploadError ? ` ${firstUploadError}` : ""}`);
     }
 	    setSendingSelection(false);
 	  }
+
+	async function retryUpload(item: UploadItem) {
+		if (!item.file || sendingSelection) return;
+		setSendingSelection(true);
+		setError("");
+		try {
+			await uploadMedia(item.file, item.id);
+		} catch (uploadError) {
+			setError(uploadError instanceof Error ? uploadError.message : "Upload could not be retried.");
+		} finally {
+			setSendingSelection(false);
+		}
+	}
 
 	  useEffect(() => {
 	    const submitQueuedSelection = (event: KeyboardEvent) => {
@@ -287,22 +302,45 @@ export function ConversationPanel({ userId, discoveryUsername, requestedSession,
 	      request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
 	      request.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
 	      request.setRequestHeader("X-Client-Operation-Id", uploadId);
-      request.upload.onprogress = (event) => { if (event.lengthComputable) setUploads((current) => current.map((item) => item.id === uploadId ? { ...item, progress: Math.round((event.loaded / event.total) * 100) } : item)); };
-      request.onload = () => {
-        if (request.status >= 200 && request.status < 300) {
-          const message = JSON.parse(request.responseText) as Message;
-          setMessages((current) => mergeRealtimeMessage(current, message));
+			request.timeout = 120_000;
+	      request.upload.onprogress = (event) => { if (event.lengthComputable) setUploads((current) => current.map((item) => item.id === uploadId ? { ...item, progress: Math.round((event.loaded / event.total) * 100) } : item)); };
+	      request.onload = () => {
+	        if (request.status >= 200 && request.status < 300) {
+					let message: Message;
+					try {
+						message = JSON.parse(request.responseText) as Message;
+					} catch {
+						const error = "Upload returned an invalid confirmation. Retry is safe.";
+						setUploads((current) => current.map((item) => item.id === uploadId ? { ...item, state: "failed", error } : item));
+						reject(new Error(error));
+						return;
+					}
+	          setMessages((current) => mergeRealtimeMessage(current, message));
           setUploads((current) => current.filter((item) => item.id !== uploadId));
+					setQueuedAttachments((current) => current.filter((item) => item.id !== uploadId));
           resolve();
           return;
         }
-        setUploads((current) => current.map((item) => item.id === uploadId ? { ...item, state: "failed", error: "Upload failed" } : item));
-        reject(new Error("Upload failed"));
+				let message = `Upload failed (HTTP ${request.status || "unknown"})`;
+				try {
+					const payload = JSON.parse(request.responseText) as { message?: unknown };
+					if (typeof payload.message === "string" && payload.message.trim()) message = `${message}: ${payload.message.trim()}`;
+				} catch {
+					message = `${message}. The server returned an unreadable error response.`;
+				}
+        setUploads((current) => current.map((item) => item.id === uploadId ? { ...item, state: "failed", error: message } : item));
+        reject(new Error(message));
       };
       request.onerror = () => {
-        setUploads((current) => current.map((item) => item.id === uploadId ? { ...item, state: "failed", error: "Network error" } : item));
-        reject(new Error("Network error"));
+				const message = "Upload failed because of a network error. Check your connection and retry.";
+        setUploads((current) => current.map((item) => item.id === uploadId ? { ...item, state: "failed", error: message } : item));
+        reject(new Error(message));
       };
+			request.ontimeout = () => {
+				const message = "Upload timed out. Check your connection and retry.";
+				setUploads((current) => current.map((item) => item.id === uploadId ? { ...item, state: "failed", error: message } : item));
+				reject(new Error(message));
+			};
       request.send(file);
     });
   }
@@ -430,7 +468,7 @@ export function ConversationPanel({ userId, discoveryUsername, requestedSession,
     </div>
 
     {error && <p role="alert" className="mx-4 mb-1 rounded-xl border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-xs font-medium text-[var(--warning)]">{error}</p>}
-    <AnimatePresence>{uploads.some((item) => item.state !== "complete") && <motion.div className="mx-4 mb-2 space-y-2 sm:mx-5" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}>{uploads.filter((item) => item.state !== "complete").map((item) => <div key={item.id} className="transfer-current"><div className="flex items-center gap-2 px-3 py-2 text-xs"><Loader2 className={`size-3 ${item.state === "uploading" ? "animate-spin text-[var(--plasma)]" : "text-[var(--danger)]"}`} /><span className="min-w-0 flex-1 truncate text-[var(--muted)]">{item.name}</span><span className="font-bold text-[var(--foreground)]">{item.state === "failed" ? item.error : `${item.progress}%`}</span>{item.state === "failed" && item.file && <button type="button" onClick={() => { queueAttachment(item.file!, item.file!.type.startsWith("audio/") ? "voice" : "file", item.id); setUploads((current) => current.filter((currentItem) => currentItem.id !== item.id)); }} className="font-bold text-[var(--signal-bright)]">Queue for Send</button>}</div><div className="transfer-current__bar" style={{ width: `${item.progress}%` }} /></div>)}</motion.div>}</AnimatePresence>
+    <AnimatePresence>{uploads.some((item) => item.state !== "complete") && <motion.div className="mx-4 mb-2 space-y-2 sm:mx-5" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}>{uploads.filter((item) => item.state !== "complete").map((item) => <div key={item.id} className="transfer-current"><div className="flex items-center gap-2 px-3 py-2 text-xs"><Loader2 className={`size-3 ${item.state === "uploading" ? "animate-spin text-[var(--plasma)]" : "text-[var(--danger)]"}`} /><span className="min-w-0 flex-1 truncate text-[var(--muted)]">{item.name}</span><span className="font-bold text-[var(--foreground)]">{item.state === "failed" ? item.error : `${item.progress}%`}</span>{item.state === "failed" && item.file && <button type="button" disabled={sendingSelection} onClick={() => void retryUpload(item)} className="shrink-0 font-bold text-[var(--signal-bright)] disabled:opacity-50">Retry upload</button>}</div><div className="transfer-current__bar" style={{ width: `${item.progress}%` }} /></div>)}</motion.div>}</AnimatePresence>
 
 	    <motion.form className="conversation-composer message-rail signal-magnetic-dock m-3 rounded-2xl p-2 sm:m-4" data-state={sendingSelection ? "sending" : activeUpload?.state ?? (queuedAttachments.length ? "queued" : connectionState === "connected" ? body.trim() ? "draft" : peerTyping ? "peer-typing" : "ready" : connectionState)} layout onSubmit={(event) => { event.preventDefault(); void send(); }}><div className="conversation-composer__rail"><span>MESSAGE RAIL</span><span className="composer-rail__state" role="status">{composerState}</span></div>{queuedAttachments.length > 0 && <div className="mb-2 flex flex-wrap gap-1.5 px-1" aria-label="Attachments ready to send">{queuedAttachments.map((attachment) => <span key={attachment.id} className="inline-flex max-w-full items-center gap-1 rounded-lg border border-[var(--signal-strong)] bg-[var(--signal-soft)] px-2 py-1 text-[0.68rem] text-[var(--foreground)]"><span className="font-semibold">{attachment.kind === "voice" ? "Voice" : "File"}</span><span className="max-w-32 truncate">{attachment.name}</span><button type="button" onClick={() => removeQueuedAttachment(attachment.id)} aria-label={`Remove ${attachment.name} from Send`} className="ml-0.5 text-[var(--muted)] hover:text-[var(--foreground)]"><X className="size-3" /></button></span>)}</div>}<div className="conversation-composer__input"><VoiceNoteRecorder onRecord={(file) => queueAttachment(file, "voice")} /><label className="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl border border-[var(--border)] text-[var(--muted)] transition hover:border-[var(--signal-strong)] hover:text-[var(--signal-bright)]" aria-label="Attach a file"><Paperclip className="size-4" /><input type="file" className="sr-only" accept="image/png,image/jpeg,image/gif,image/webp,video/webm,video/mp4,audio/webm,audio/ogg,audio/wav,audio/mp4,application/pdf,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (file) queueAttachment(file, "file"); event.target.value = ""; }} /></label><input value={body} onChange={(event) => { const next = event.target.value; setBody(next); if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current); if (session) { onTyping(next.trim() ? "typing.start" : "typing.stop"); if (next.trim()) typingTimerRef.current = window.setTimeout(() => onTyping("typing.stop"), 2200); } }} onBlur={() => { if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current); onTyping("typing.stop"); }} onKeyDown={(event) => { if (event.key === "Enter" && (event.shiftKey || event.nativeEvent.isComposing || queuedAttachments.length > 0 || sendingSelection)) event.preventDefault(); }} placeholder={`Message @${session.username}`} className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--subtle)]" aria-label={`Message ${session.username}`} /><motion.button whileTap={{ scale: 0.95 }} disabled={(!body.trim() && queuedAttachments.length === 0) || sendingSelection} type="submit" aria-label="Send message and attachments" className="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--signal)] text-white shadow-[0_0_20px_rgba(141,123,255,.32)] transition hover:bg-[var(--signal-bright)] hover:text-[var(--void)] disabled:opacity-40"><ArrowUp className="size-4" /></motion.button></div><div className="conversation-composer__meta"><span>{sendOnEnter ? "Press Enter to send the queued selection" : "Use Send to deliver this selection"}</span><span>{retentionSummary}</span></div></motion.form>
   </motion.section>;
