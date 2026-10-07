@@ -180,7 +180,8 @@ func main() {
 	app := &server{cfg: cfg, db: pool, queries: sqlc.New(pool), redis: redisClient, s3: s3Client, s3Bucket: cfg.s3Bucket, log: log, requests: requests, clients: make(map[string]map[*wsClient]struct{}), authLimits: make(map[string]authRateLimitFallback), instanceID: ulid.Make().String()}
 	app.startTypingFanout(ctx)
 	app.startMessageFanout(ctx)
-	httpServer := &http.Server{Addr: ":" + cfg.port, Handler: app.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second}
+	// Server-wide read/write deadlines would terminate upgraded WebSocket connections.
+	httpServer := &http.Server{Addr: ":" + cfg.port, Handler: app.handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	errCh := make(chan error, 1)
 	go func() {
 		fmt.Printf("Server running on http://localhost:%s\n", cfg.port)

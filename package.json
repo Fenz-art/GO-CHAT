@@ -8,6 +8,7 @@
     "build:frontend": "NODE_ENV=production next build",
     "build": "NODE_ENV=production pnpm build:frontend && mkdir -p dist && go build -o dist/gochat ./backend/cmd/server",
     "start": "./dist/gochat",
+    "db:migrate": "go run ./backend/cmd/migrate",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
