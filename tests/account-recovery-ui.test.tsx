@@ -10,6 +10,28 @@ afterEach(() => {
 });
 
 describe("account recovery and session controls", () => {
+  it("creates an account with a password and attaches it to the current anonymous identity", async () => {
+    const fetchMock = vi.fn(async (path: string, options?: RequestInit) => {
+      if (path === "/api/v1/account") return new Response(JSON.stringify({ id: "account-1" }), { status: 201, headers: { "content-type": "application/json" } });
+      if (path === "/api/v1/onboarding/resume") return new Response(JSON.stringify({ completed: true, userId: "identity-1", username: "private-line" }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const onAuthenticated = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AccountAccessPanel open mode="create" onClose={vi.fn()} onAuthenticated={onAuthenticated} />);
+    fireEvent.change(screen.getByLabelText("Account username"), { target: { value: "account-name" } });
+    fireEvent.change(screen.getByLabelText("Recovery email"), { target: { value: "person@example.test" } });
+    fireEvent.change(screen.getByLabelText("Create password"), { target: { value: "long-enough-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create secure account" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/account", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ username: "account-name", email: "person@example.test", password: "long-enough-password" }),
+    })));
+    await waitFor(() => expect(onAuthenticated).toHaveBeenCalledWith({ userId: "identity-1", username: "private-line" }));
+  });
+
   it("requests password recovery without revealing whether an account exists", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       message: "If a verified account uses that email, password reset instructions will be sent.",

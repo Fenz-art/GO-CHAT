@@ -163,7 +163,12 @@ export function GoChatShell() {
       socket.onmessage = (message) => {
         try {
           const event = JSON.parse(message.data) as { type?: string; sessionId?: string; messageId?: string; readBy?: string; message?: RealtimeMessage["message"] };
-          if (event.type === "connection.ready") { setConnectionState("connected"); return; }
+          if (event.type === "connection.ready") {
+            setConnectionState("connected");
+            void loadIncomingRequests();
+            void loadSessions();
+            return;
+          }
           if (event.type === "session.revoked") {
             setAccount(null);
             setIdentity(null);

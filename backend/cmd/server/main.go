@@ -56,6 +56,7 @@ const (
 	mediaSignatureProbeBytes     = 512
 	mediaMultipartRequestBytes   = maxMediaBytes + (1 << 20)
 	messageFanoutChannel         = "gochat:message.created"
+	userEventFanoutChannel       = "gochat:user.event"
 	contentSecurityPolicy        = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; worker-src 'self' blob:"
 	previewContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://manus.im https://*.manus.im https://manus.computer https://*.manus.computer; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; worker-src 'self' blob:"
 )
@@ -180,6 +181,7 @@ func main() {
 	app := &server{cfg: cfg, db: pool, queries: sqlc.New(pool), redis: redisClient, s3: s3Client, s3Bucket: cfg.s3Bucket, log: log, requests: requests, clients: make(map[string]map[*wsClient]struct{}), authLimits: make(map[string]authRateLimitFallback), instanceID: ulid.Make().String()}
 	app.startTypingFanout(ctx)
 	app.startMessageFanout(ctx)
+	app.startUserEventFanout(ctx)
 	// Server-wide read/write deadlines would terminate upgraded WebSocket connections.
 	httpServer := &http.Server{Addr: ":" + cfg.port, Handler: app.handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	errCh := make(chan error, 1)
@@ -363,6 +365,39 @@ func (s *server) startMessageFanout(ctx context.Context) {
 				continue
 			}
 			s.broadcastMessageLocal(fanout.Message)
+		}
+	}()
+}
+
+type userEventFanout struct {
+	Origin  string          `json:"origin"`
+	UserID  string          `json:"userId"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+func (s *server) startUserEventFanout(ctx context.Context) {
+	if s.redis == nil {
+		return
+	}
+	pubsub := s.redis.Subscribe(ctx, userEventFanoutChannel)
+	go func() {
+		defer pubsub.Close()
+		for event := range pubsub.Channel() {
+			var fanout userEventFanout
+			if json.Unmarshal([]byte(event.Payload), &fanout) != nil ||
+				fanout.Origin == s.instanceID ||
+				fanout.UserID == "" ||
+				!json.Valid(fanout.Payload) {
+				continue
+			}
+			var payload struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(fanout.Payload, &payload) != nil ||
+				(payload.Type != "request.created" && payload.Type != "request.resolved") {
+				continue
+			}
+			s.broadcastUserEventLocal(fanout.UserID, fanout.Payload)
 		}
 	}()
 }
@@ -1989,14 +2024,32 @@ func (s *server) broadcastUserEvent(userID string, event map[string]any) {
 	defer cancel()
 	payload, err := json.Marshal(event)
 	if err != nil {
+		s.log.Warn("could not encode user event", "error", err)
 		return
 	}
+	s.broadcastUserEventLocal(userID, payload)
+	if s.redis == nil {
+		return
+	}
+	fanoutPayload, err := json.Marshal(userEventFanout{Origin: s.instanceID, UserID: userID, Payload: payload})
+	if err != nil {
+		s.log.Warn("could not encode user event fan-out", "error", err)
+		return
+	}
+	if err := s.redis.Publish(ctx, userEventFanoutChannel, fanoutPayload).Err(); err != nil {
+		s.log.Warn("Redis user event fan-out unavailable after local delivery", "error", err, "user_id", userID)
+	}
+}
+
+func (s *server) broadcastUserEventLocal(userID string, payload []byte) {
 	s.wsMu.RLock()
 	clients := make([]*wsClient, 0, len(s.clients[userID]))
 	for client := range s.clients[userID] {
 		clients = append(clients, client)
 	}
 	s.wsMu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	for _, client := range clients {
 		client.write(ctx, payload)
 	}
