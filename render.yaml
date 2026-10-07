@@ -3,21 +3,15 @@ services:
     name: go-chat-api
     runtime: docker
     region: singapore
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /api/v1/health
-    preDeployCommand: ./migrate
+    healthCheckPath: /healthz
     envVars:
       - key: GOCHAT_POSTGRES_URL
-        fromDatabase:
-          name: go-chat-postgres
-          property: connectionString
+        sync: false
       - key: GOCHAT_REDIS_URL
-        fromService:
-          type: keyvalue
-          name: go-chat-redis
-          property: connectionString
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: GOCHAT_S3_ENDPOINT
@@ -30,17 +24,3 @@ services:
         sync: false
       - key: GOCHAT_S3_REGION
         sync: false
-  - type: keyvalue
-    name: go-chat-redis
-    region: singapore
-    plan: starter
-    maxmemoryPolicy: noeviction
-    ipAllowList: []
-
-databases:
-  - name: go-chat-postgres
-    region: singapore
-    plan: basic-256mb
-    databaseName: gochat
-    user: gochat
-    ipAllowList: []

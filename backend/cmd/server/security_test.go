@@ -7,6 +7,17 @@ import (
 	"testing"
 )
 
+func TestLivenessDoesNotProbeExternalDependencies(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	(&server{}).liveness(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("liveness status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Body.String(); !strings.Contains(got, `"status":"ok"`) {
+		t.Fatalf("unexpected liveness response: %s", got)
+	}
+}
+
 func TestSecurityAddsProductionContentSecurityPolicy(t *testing.T) {
 	app := &server{}
 	handler := app.security(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))

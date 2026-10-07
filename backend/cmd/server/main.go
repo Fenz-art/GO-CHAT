@@ -236,6 +236,7 @@ func connectDependencies(ctx context.Context, cfg config, log *slog.Logger) (*pg
 func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/realtime", s.realtime)
+	mux.HandleFunc("GET /healthz", s.liveness)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/storage/health", s.storageHealth)
 	mux.HandleFunc("GET /metrics", promhttp.Handler().ServeHTTP)
@@ -466,6 +467,10 @@ func (s *server) staticHandler() http.Handler {
 		})
 	}
 	return http.FileServer(http.FS(public))
+}
+
+func (s *server) liveness(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {

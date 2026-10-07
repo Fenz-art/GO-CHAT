@@ -23,4 +23,4 @@ COPY --from=go-builder /src/backend/migrations ./backend/migrations
 COPY --from=frontend-builder /app/out ./out
 USER 65532:65532
 EXPOSE 3000
-CMD ["/app/gochat"]
+CMD ["/bin/sh", "-c", "./migrate && exec ./gochat"]
