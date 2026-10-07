@@ -8,3 +8,7 @@ node_modules
 out/
 dist/
 tsconfig.tsbuildinfo
+.vercel
+.env
+.env.*
+!.env.example
